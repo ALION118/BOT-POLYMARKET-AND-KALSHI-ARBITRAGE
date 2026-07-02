@@ -237,7 +237,7 @@ class PolymarketClient(BasePolymarketClient):
             all_markets = []
             offset = 0
             limit = 100  # Gamma API max per request
-            max_markets = 5000  # Get up to 5000 markets!
+            max_markets = 1900  # Get up to 5000 markets!
             
             logger.info("Fetching ALL available markets from Polymarket...")
             

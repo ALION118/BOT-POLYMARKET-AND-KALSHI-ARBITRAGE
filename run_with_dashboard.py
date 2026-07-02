@@ -32,6 +32,7 @@ from core.portfolio import Portfolio
 from core.cross_platform_arb import CrossPlatformArbEngine, MarketMatcher
 from utils.config_loader import load_config, BotConfig
 from utils.logging_utils import setup_logging
+from utils.telegram_notifier import notify_opportunity, notify_cross_platform_opportunity
 from dashboard.server import app, dashboard_state
 from dashboard.integration import DashboardIntegration
 
@@ -220,6 +221,12 @@ class TradingBotWithDashboard:
                     edge=signal.opportunity.edge,
                     suggested_size=signal.opportunity.suggested_size,
                 )
+                asyncio.create_task(notify_opportunity(
+                    opportunity_type=signal.opportunity.opportunity_type.value,
+                    market_id=signal.market_id,
+                    edge=signal.opportunity.edge,
+                    suggested_size=signal.opportunity.suggested_size,
+                ))
             
             self.dashboard_integration.add_signal(
                 action=signal.action,
@@ -379,13 +386,88 @@ class TradingBotWithDashboard:
                 })
             
             dashboard_state.cross_platform["matched_pairs_data"] = matched_pairs_display
-            
+
+            # Start continuously watching these pairs for real cross-platform
+            # arbitrage (price divergence), notifying Telegram when found.
+            logger.info("Starting cross-platform arbitrage watcher (min edge 2%)...")
+            asyncio.create_task(self._watch_cross_platform_arbitrage())
+
         except Exception as e:
             logger.error(f"Matching error: {e}")
             import traceback
             traceback.print_exc()
             dashboard_state.cross_platform["matching_status"] = "error"
     
+    async def _watch_cross_platform_arbitrage(self, poll_interval: float = 15.0) -> None:
+        """
+        Continuously check matched market pairs for real cross-platform
+        arbitrage (price divergence between Polymarket and Kalshi).
+
+        Runs forever while the bot is running. Notifies Telegram whenever
+        a net edge >= self.cross_platform_engine.min_edge (2% by default)
+        is found. De-dupes so the same opportunity isn't spammed every poll.
+        """
+        notified_recently: dict[str, float] = {}  # pair_id -> last notified timestamp
+        RENOTIFY_COOLDOWN = 300  # seconds, don't re-alert same pair more than every 5 min
+
+        while self._running:
+            try:
+                pairs = self.market_matcher.get_cached_pairs()
+                if not pairs:
+                    await asyncio.sleep(poll_interval)
+                    continue
+
+                for pair in pairs:
+                    try:
+                        poly_ob = await self.data_feed.client.get_orderbook(pair.polymarket_id)
+                        kalshi_ob = await self.kalshi_client.get_orderbook_unified(pair.kalshi_ticker)
+
+                        if not poly_ob or not kalshi_ob:
+                            continue
+
+                        opp = self.cross_platform_engine.check_arbitrage(
+                            market_pair=pair,
+                            polymarket_ob=poly_ob,
+                            kalshi_ob=kalshi_ob,
+                        )
+
+                        if opp is None:
+                            continue
+
+                        now = asyncio.get_event_loop().time()
+                        last_notified = notified_recently.get(pair.pair_id, 0)
+                        if now - last_notified < RENOTIFY_COOLDOWN:
+                            continue
+                        notified_recently[pair.pair_id] = now
+
+                        logger.info(
+                            f"CROSS-PLATFORM ARB FOUND: {opp.token} | "
+                            f"Buy {opp.buy_platform} @ {opp.buy_price:.3f} | "
+                            f"Sell {opp.sell_platform} @ {opp.sell_price:.3f} | "
+                            f"Net edge: {opp.edge_pct:.2%}"
+                        )
+
+                        asyncio.create_task(notify_cross_platform_opportunity(
+                            question=pair.polymarket_question,
+                            token=opp.token,
+                            buy_platform=opp.buy_platform,
+                            buy_price=opp.buy_price,
+                            sell_platform=opp.sell_platform,
+                            sell_price=opp.sell_price,
+                            edge_pct=opp.edge_pct,
+                            suggested_size=opp.suggested_size,
+                        ))
+
+                    except Exception as e:
+                        logger.debug(f"Error checking pair {pair.pair_id}: {e}")
+                        continue
+
+                await asyncio.sleep(poll_interval)
+
+            except Exception as e:
+                logger.error(f"Error in cross-platform arbitrage watcher: {e}")
+                await asyncio.sleep(poll_interval)
+
     async def stop(self) -> None:
         """Stop everything gracefully."""
         logger.info("Shutting down...")
