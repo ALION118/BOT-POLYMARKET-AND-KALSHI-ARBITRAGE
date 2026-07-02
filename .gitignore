@@ -68,3 +68,4 @@ coverage.xml
 # Sensitive config (use config.yaml.example for template)
 config.live.yaml
 
+.env.save
