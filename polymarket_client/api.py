@@ -207,6 +207,8 @@ class PolymarketClient(BasePolymarketClient):
                 return response.json()
             except httpx.HTTPStatusError as e:
                 logger.warning(f"HTTP error {e.response.status_code} on {url}: {e}")
+                if e.response.status_code == 404:
+                    return None
                 if e.response.status_code >= 500:
                     # Retry on server errors
                     if attempt < self.max_retries - 1:
@@ -500,6 +502,13 @@ class PolymarketClient(BasePolymarketClient):
                 base_url=self.rest_url,
             )
             
+            if data is None:
+                return TokenOrderBook(
+                    token_type=token_type,
+                    bids=OrderBookSide(levels=[]),
+                    asks=OrderBookSide(levels=[]),
+                )
+            
             # Parse bids and asks
             bids = []
             asks = []
@@ -641,7 +650,9 @@ class PolymarketClient(BasePolymarketClient):
                             # Fetch REAL order books from CLOB API
                             yes_book = await self._fetch_token_orderbook(yes_token, TokenType.YES)
                             no_book = await self._fetch_token_orderbook(no_token, TokenType.NO)
-                            
+                            if yes_book is None or no_book is None:
+                                continue
+           
                             orderbook = OrderBook(
                                 market_id=market_id,
                                 yes=yes_book,

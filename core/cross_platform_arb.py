@@ -165,7 +165,7 @@ class MarketMatcher:
         "san antonio spurs": ["spurs", "san antonio"],
     }
     
-    def __init__(self, min_similarity: float = 0.5):  # Higher threshold for quality
+    def __init__(self, min_similarity: float = 0.75):  # Raised after fixing false-positive matches
         """
         Initialize matcher.
         
@@ -300,13 +300,9 @@ class MarketMatcher:
                 else:
                     return False, 0.3  # Same teams but different dates - likely different games
             
-            # Check if at least one team matches (and dates match)
-            overlap = teams1_set & teams2_set
-            if len(overlap) >= 1:
-                date1 = self.extract_date(text1)
-                date2 = self.extract_date(text2)
-                if self.dates_match(date1, date2):
-                    return True, 0.7 + (0.2 * len(overlap) / 2)
+            # NOTE: removed the old "at least one team overlaps" rule.
+            # It caused dangerous false positives (matching unrelated
+            # markets). Requiring BOTH teams to match is safer.
         
         return False, 0.0
     
@@ -577,6 +573,24 @@ class MarketMatcher:
     def get_cached_pairs(self) -> list[MarketPair]:
         """Get all cached market pairs."""
         return list(self._matched_pairs.values())
+
+
+def match_markets_sync(
+    polymarket_markets: list,
+    kalshi_markets: list,
+    min_similarity: float = 0.75,
+) -> list:
+    """
+    Module-level, picklable wrapper around MarketMatcher.find_matches.
+
+    Designed to run inside a ProcessPoolExecutor worker so the CPU-bound
+    matching runs on its own core, free of GIL contention with the main
+    process's orderbook streaming. Returns a list[MarketPair].
+    """
+    import asyncio
+
+    matcher = MarketMatcher(min_similarity=min_similarity)
+    return asyncio.run(matcher.find_matches(polymarket_markets, kalshi_markets))
 
 
 class CrossPlatformArbEngine:

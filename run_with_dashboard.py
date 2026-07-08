@@ -459,7 +459,7 @@ class TradingBotWithDashboard:
                         ))
 
                     except Exception as e:
-                        logger.debug(f"Error checking pair {pair.pair_id}: {e}")
+                        logger.warning(f"Error checking pair {pair.pair_id}: {e}")
                         continue
 
                 await asyncio.sleep(poll_interval)
